@@ -1,5 +1,7 @@
 # taurify
-Helps you to taurify (just like Electronify) an URL into an application
+***This project is not related in any manner with IBM, RedHat or Ansible and these companies does not support this project.***
+
+Helps you to taurify (just like Electronify) an URL into an application.
 
 Tested under :
 - Red Hat Enterprise Linux release 8.6 (Ootpa)
