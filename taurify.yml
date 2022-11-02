@@ -1,0 +1,214 @@
+---
+- name: Taurify an app
+  hosts: localhost
+
+  vars:
+    project: 
+      name: my_project
+      title: IBM\ homepage
+      frontend: ui
+      url_path: "https://www.ibm.com"
+      bundle_identifier: "ibm.test.ibmapp"
+    config:
+      host: localhost
+      port: 8080
+    before_build_command: "cd {{ project.frontend }} && trunk build"
+    executable_path: "{{ project.name }}/src-tauri/target/release/app"
+    exposure_address: "http://{{ config.host }}:{{ config.port }}"
+
+# Tags : debug, init, config, build, run
+  tasks:
+  - name: Debug parameters
+    ansible.builtin.debug:
+      msg:
+      - "Project name             '{{ project.name }}'"
+      - "Window title             '{{ project.title }}'"
+      - "UI folder path           '{{ project.frontend }}'"
+      - "Website to fetch         '{{ project.url_path }}'"
+      - "File to execute          '{{ executable_path }}'"
+      - "Application bundle name  '{{ project.bundle_identifier }}'"
+      - "Exposure address         '{{ exposure_address }}'"
+      - "Build command            '{{ before_build_command }}'"
+    tags:
+    - debug
+
+  - name: "Name project folder"
+    ansible.builtin.file:
+      path: "{{ project.name }}"
+      state: directory
+      mode: "0755" # stat -c '%a'
+    tags:
+    - init
+    - folder
+
+  - name: "Init GIT for folder : \"{{ project.name }}\""
+    shell: |
+      cd {{ project.name }}
+      git init
+    tags:
+    - init
+
+  - name: "Create front-end folder : \"{{ project.frontend }}\""
+    shell: |
+      cd {{ project.name }}
+      cargo new --bin {{ project.frontend }}
+    ignore_errors: true
+    tags:
+    - init
+    - folder
+
+  - name: Installing trunk, wasm-bindgen, cargo-edit, yew and adding wasm32 target
+    shell: |
+      cd {{ project.name }}/{{ project.frontend }}
+      rustup target add wasm32-unknown-unknown
+      cargo install trunk
+      cargo install wasm-bindgen-cli
+      cargo install cargo-edit
+      cargo add yew
+    tags:
+    - init
+
+  - name: Creating HTML file
+    copy:
+      dest: "{{ project.name }}/{{ project.frontend }}/index.html"
+      content: |
+        <!DOCTYPE html>
+          <html>
+            <head>
+              <meta charset=\"utf-8\" />
+              <title>{{ project.name }}</title>
+            </head>
+            <body></body>
+          </html>
+    tags:
+    - init
+
+  - name: Modifying main.rs
+    copy:
+      dest: "{{ project.name }}/{{ project.frontend }}/src/main.rs"
+      content: |
+        use yew::prelude::*;
+
+        fn main() {
+            yew::start_app::<App>();
+        }
+
+        #[function_component(App)]
+        pub fn app() -> Html {
+            html! {
+                <script>{ "window.location.assign('{{ project.url_path }}')" }</script>
+            }
+        }
+    tags:
+    - init
+
+  - name: Installing and initializing tauri then building
+    shell: |
+      cd {{ project.name }}
+      cargo install tauri-cli
+      cargo tauri init -f -A {{ project.name }} -D ../{{ project.frontend }}/dist -P {{ exposure_address }} -W {{ project.title }} --before-build-command echo
+      cd {{ project.frontend }}
+      cargo build --release
+    tags:
+    - init
+
+  - name: Change tauri build command
+    slurp:
+      src: "{{ project.name }}/src-tauri/tauri.conf.json"
+    register: imported_json
+    tags:
+    - config
+
+  - name: Update tauri build command
+    set_fact:
+      imported_json: "{{ imported_json.content|b64decode|from_json | combine(item, recursive=True)}}"
+    loop:
+      - { 'build': { 'beforeBuildCommand': '{{ before_build_command }}' }}
+    tags:
+    - config
+
+  - name: Writing changes...
+    copy: 
+      content: "{{ imported_json | to_nice_json }}" 
+      dest: "{{ project.name }}/src-tauri/tauri.conf.json"
+    tags:
+    - config
+
+  - name: Change tauri bundle identifier
+    slurp:
+      src: "{{ project.name }}/src-tauri/tauri.conf.json"
+    register: imported_json
+    tags:
+    - config
+
+  - name: "Update tauri bundle identifier"
+    set_fact:
+      imported_json: "{{ imported_json.content|b64decode|from_json | combine(item, recursive=True)}}"
+    loop:
+      - { 'tauri': { 'bundle' : { 'identifier': '{{ project.bundle_identifier }}' }}}
+    tags:
+    - config
+
+  - name: Writing changes...
+    copy: 
+      content: "{{ imported_json | to_nice_json }}" 
+      dest: "{{ project.name }}/src-tauri/tauri.conf.json"
+    tags:
+    - config
+
+  - name: "Check for non-use of {{ exposure_address }}"
+    wait_for:
+      host: "{{ config.host }}"
+      port: "{{ config.port }}"
+      state: absent
+      delay: 0
+      timeout: 3
+    tags:
+    - run
+    - check
+
+  - name: Building tauri app - Please wait a moment...
+    shell: |
+      cd {{ project.name }}/src-tauri
+      cargo tauri build
+    tags:
+    - build
+
+  - name: Building project - Please wait a moment...
+    shell: |
+      cd {{ project.name }}/src-tauri
+      cargo build --release
+    tags:
+    - build
+
+  # - name: Launch web backend
+  #   shell: nohup trunk serve &
+  #   args:
+  #     chdir: "{{ project.name }}/src-tauri"
+  #   tags:
+  #   - run
+
+  - name: "Check for availabilty of {{ exposure_address }}"
+    wait_for:
+      host: "{{ config.host }}"
+      port: "{{ config.port }}"
+      state: started
+      delay: 0
+      timeout: 3
+    ignore_errors: true
+    tags:
+    - run
+    - check
+
+  - name: Check built file
+    ansible.builtin.stat:
+      path: "{{ executable_path }}"
+    register: file
+    tags:
+    - run
+
+  - name: Run project
+    shell: sh -c {{ executable_path }}
+    when: file.stat.exists and file.stat.xusr
+    tags:
+    - run
